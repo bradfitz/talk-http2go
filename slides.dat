@@ -215,7 +215,7 @@ func TestReadFrameHeader(t *testing.T) {
                 {in: "\x01\x02\x03" + "\x04" + "\x05" + "\x06\x07\x08\x09", want: FrameHeader{
                         Length: 66051, Type: 4, Flags: 5, StreamID: 101124105,
                 }},
-                // Ignore high bit:                                                                                                                                          
+                // Ignore high bit:
                 {in: "\xff\xff\xff" + "\xff" + "\xff" + "\xff\xff\xff\xff", want: FrameHeader{
                         Length: 16777215, Type: 255, Flags: 255, StreamID: 2147483647}},
                 {in: "\xff\xff\xff" + "\xff" + "\xff" + "\x7f\xff\xff\xff", want: FrameHeader{
@@ -263,7 +263,7 @@ func NewFramer(w io.Writer, r io.Reader) *Framer {
 	}
 }
 
--- 
+--
 
 func (fr *Framer) ReadFrame() (Frame, error) {
 	fh, err := readFrameHeader(fr.headerBuf[:], fr.r)
@@ -577,3 +577,77 @@ func (f *Framer) WriteData(streamID uint32, endStream bool, data []byte) error {
 	f.wbuf = append(f.wbuf, data...)
 	return f.endWrite()
 }
+
+--
+
+Server
+
+--
+
+Upgrading to HTTP/2
+
+--
+
+tln := tls.NewListener(ln, &tls.Config{
+   NextProtos:   []string{"h2-14"},
+   Certificates: []tls.Certificate{cert},
+})
+
+conn, err := tln.Accept()
+...
+tc := conn.(*tls.Conn)
+if err := tc.Handshake(); err != nil {
+   ...
+}
+fmt.Printf("State: %+v", tc.ConnectionState())
+
+  // State: {Version:771 HandshakeComplete:true DidResume:false CipherSuite:49199
+  // NegotiatedProtocol:h2-14 NegotiatedProtocolIsMutual:true ServerName:localhost ...
+
+--
+
+package http
+
+type Server struct {
+    ...
+    // TLSNextProto optionally specifies a function to take over
+    // ownership of the provided TLS connection when an NPN
+    // protocol upgrade has occurred.  The map key is the protocol
+    // name negotiated. The Handler argument should be used to
+    // handle HTTP requests and will initialize the Request's TLS
+    // and RemoteAddr if not already set.  The connection is
+    // automatically closed when the function returns.
+    TLSNextProto map[string]func(*Server, *tls.Conn, Handler)
+
+--
+
+package http2
+
+// Server is an HTTP/2 server.
+type Server struct {
+     ...
+     MaxConcurrentStreams uint32
+     MaxReadFrameSize uint32
+     ...
+}
+
+// ConfigureServer adds HTTP/2 support to a net/http Server.
+//
+// The configuration conf may be nil.
+//
+// ConfigureServer must be called before s begins serving.
+func ConfigureServer(s *http.Server, conf *Server) {
+    ...
+    s.TLSNextProto[NextProtoTLS] = func(hs *http.Server, c *tls.Conn, h http.Handler) {
+        conf.handleConn(hs, c, h)
+    }
+}
+
+--
+
+package http2
+
+func (srv *Server) handleConn(hs *http.Server, c net.Conn, h http.Handler) {
+   ...
+
+--

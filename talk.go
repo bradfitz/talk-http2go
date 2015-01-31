@@ -5,6 +5,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -12,6 +14,10 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/ssh/terminal"
+)
+
+var (
+	stats = flag.Bool("stats", false, "dump stats")
 )
 
 var (
@@ -29,10 +35,16 @@ var (
 )
 
 func main() {
+	flag.Parse()
 	slides, err := readSlidesDat()
 	if err != nil {
 		log.Fatal(err)
 	}
+	if *stats {
+		fmt.Println(len(slides), "slides")
+		return
+	}
+
 	if len(slides) == 0 {
 		slides = []string{"No slides\n"}
 	}
