@@ -1,0 +1,579 @@
+func ReadFrame() (...) {
+    ....
+}
+
+--
+
+func ReadFrame() (Frame ?, error) {
+    ....
+}
+
+--
+Frame format:
+
+  0                   1                   2                   3
+  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ |                 Length (24)                   |
+ +---------------+---------------+---------------+
+ |   Type (8)    |   Flags (8)   |
+ +-+-+-----------+---------------+-------------------------------+
+ |R|                 Stream Identifier (31)                      |
+ +=+=============================================================+
+ |                   Frame Payload (0...)                      ...
+ +---------------------------------------------------------------+
+
+--
+
+type Flags uint8
+type FrameType uint8
+
+// A FrameHeader is the 9 byte header of all HTTP/2 frames.
+// See http://http2.github.io/http2-spec/#FrameHeader
+type FrameHeader struct {
+	// Type is the 1 byte frame type. There are ten standard frame
+	// types, but extension frame types may be written by WriteRawFrame
+	// and will be returned by ReadFrame (as UnknownFrame).
+	Type FrameType
+
+	// Flags are the 1 byte of 8 potential bit flags per frame.
+	// They are specific to the frame type.
+	Flags Flags
+
+	// Length is the length of the frame, not including the 9 byte header.
+	// The maximum size is one byte less than 16MB (uint24), but only
+	// frames up to 16KB are allowed without peer agreement.
+	Length uint32
+
+	// StreamID is which stream this frame is for. Certain frames
+	// are not stream-specific, in which case this field is 0.
+	StreamID uint32
+}
+
+--
+
+// A FrameType is a registered frame type as defined in
+// http://http2.github.io/http2-spec/#rfc.section.11.2
+type FrameType uint8
+
+const (
+	FrameData         FrameType = 0x0
+	FrameHeaders      FrameType = 0x1
+	FramePriority     FrameType = 0x2
+	FrameRSTStream    FrameType = 0x3
+	FrameSettings     FrameType = 0x4
+	FramePushPromise  FrameType = 0x5
+	FramePing         FrameType = 0x6
+	FrameGoAway       FrameType = 0x7
+	FrameWindowUpdate FrameType = 0x8
+	FrameContinuation FrameType = 0x9
+)
+
+--
+
+var frameName = map[FrameType]string{
+	FrameData:         "DATA",
+	FrameHeaders:      "HEADERS",
+	FramePriority:     "PRIORITY",
+	FrameRSTStream:    "RST_STREAM",
+	FrameSettings:     "SETTINGS",
+	FramePushPromise:  "PUSH_PROMISE",
+	FramePing:         "PING",
+	FrameGoAway:       "GOAWAY",
+	FrameWindowUpdate: "WINDOW_UPDATE",
+	FrameContinuation: "CONTINUATION",
+}
+
+func (t FrameType) String() string {
+	if s, ok := frameName[t]; ok {
+		return s
+	}
+	return fmt.Sprintf("UNKNOWN_FRAME_TYPE_%d", uint8(t))
+}
+
+--
+
+// Flags is a bitmask of HTTP/2 flags.
+// The meaning of flags varies depending on the frame type.
+type Flags uint8
+
+// Has reports whether f contains all (0 or more) flags in v.
+func (f Flags) Has(v Flags) bool {
+	return (f & v) == v
+}
+
+--
+
+// Frame-specific FrameHeader flag bits.
+const (
+	// Data Frame
+	FlagDataEndStream Flags = 0x1
+	FlagDataPadded    Flags = 0x8
+
+	// Headers Frame
+	FlagHeadersEndStream  Flags = 0x1
+	FlagHeadersEndHeaders Flags = 0x4
+	FlagHeadersPadded     Flags = 0x8
+	FlagHeadersPriority   Flags = 0x20
+
+	// Settings Frame
+	FlagSettingsAck Flags = 0x1
+
+	// Ping Frame
+	FlagPingAck Flags = 0x1
+
+	// Continuation Frame
+	FlagContinuationEndHeaders Flags = 0x4
+
+	FlagPushPromiseEndHeaders = 0x4
+	FlagPushPromisePadded     = 0x8
+)
+
+--
+
+var flagName = map[FrameType]map[Flags]string{
+	FrameData: {
+		FlagDataEndStream: "END_STREAM",
+		FlagDataPadded:    "PADDED",
+	},
+	FrameHeaders: {
+		FlagHeadersEndStream:  "END_STREAM",
+		FlagHeadersEndHeaders: "END_HEADERS",
+		FlagHeadersPadded:     "PADDED",
+		FlagHeadersPriority:   "PRIORITY",
+	},
+	FrameSettings: {
+		FlagSettingsAck: "ACK",
+	},
+	FramePing: {
+		FlagPingAck: "ACK",
+	},
+	FrameContinuation: {
+		FlagContinuationEndHeaders: "END_HEADERS",
+	},
+	FramePushPromise: {
+		FlagPushPromiseEndHeaders: "END_HEADERS",
+		FlagPushPromisePadded:     "PADDED",
+	},
+}
+
+--
+
+func ReadFrame(r io.Reader) (Frame, error) {
+    ....
+}
+
+--
+
+func readFrameHeader(...) (FrameHeader, error) {
+	....
+}
+
+--
+
+const frameHeaderLen = 9
+
+--
+
+func readFrameHeader(r io.Reader) (FrameHeader, error) {
+	var buf [frameHeaderLen]byte
+	_, err := io.ReadFull(r, buf[:])
+	if err != nil {
+		return FrameHeader{}, err
+	}
+	return FrameHeader{
+		Length:   (uint32(buf[0])<<16 | uint32(buf[1])<<8 | uint32(buf[2])),
+		Type:     FrameType(buf[3]),
+		Flags:    Flags(buf[4]),
+		StreamID: binary.BigEndian.Uint32(buf[5:]) & (1<<31 - 1),
+	}, nil
+}
+
+--
+
+func readFrameHeader(buf []byte, r io.Reader) (FrameHeader, error) {
+	_, err := io.ReadFull(r, buf[:frameHeaderLen])
+	if err != nil {
+		return FrameHeader{}, err
+	}
+	return FrameHeader{
+		Length:   (uint32(buf[0])<<16 | uint32(buf[1])<<8 | uint32(buf[2])),
+		Type:     FrameType(buf[3]),
+		Flags:    Flags(buf[4]),
+		StreamID: binary.BigEndian.Uint32(buf[5:]) & (1<<31 - 1),
+	}, nil
+}
+
+--
+
+func TestReadFrameHeader(t *testing.T) {
+     tests := []struct {
+                in   string
+                want FrameHeader
+        }{
+                {in: "\x00\x00\x00" + "\x00" + "\x00" + "\x00\x00\x00\x00", want: FrameHeader{}},
+                {in: "\x01\x02\x03" + "\x04" + "\x05" + "\x06\x07\x08\x09", want: FrameHeader{
+                        Length: 66051, Type: 4, Flags: 5, StreamID: 101124105,
+                }},
+                // Ignore high bit:                                                                                                                                          
+                {in: "\xff\xff\xff" + "\xff" + "\xff" + "\xff\xff\xff\xff", want: FrameHeader{
+                        Length: 16777215, Type: 255, Flags: 255, StreamID: 2147483647}},
+                {in: "\xff\xff\xff" + "\xff" + "\xff" + "\x7f\xff\xff\xff", want: FrameHeader{
+                        Length: 16777215, Type: 255, Flags: 255, StreamID: 2147483647}},
+        }
+        for i, tt := range tests {
+                got, err := readFrameHeader(make([]byte, 9), strings.NewReader(tt.in))
+                if err != nil {
+                        t.Errorf("%d. readFrameHeader(%q) = %v", i, tt.in, err)
+                        continue
+                }
+                tt.want.valid = true
+                if got != tt.want {
+                       t.Errorf("%d. readFrameHeader(%q) = %+v; want %+v", i, tt.in, got, tt.want)
+                }
+        }
+}
+
+--
+
+func ReadFrame(r io.Reader) (Frame, error) {
+    // ... which buf?
+    fh, err := readFrameHeader(buf, r)
+    // ...
+}
+
+--
+
+// A Framer reads and writes Frames.
+type Framer struct {
+	r          io.Reader
+	headerBuf  [frameHeaderLen]byte
+
+	w          io.Writer
+        // ...
+}
+
+--
+
+// NewFramer returns a Framer that writes frames to w and reads them from r.
+func NewFramer(w io.Writer, r io.Reader) *Framer {
+	return &Framer{
+		w: w,
+		r: r,
+	}
+}
+
+-- 
+
+func (fr *Framer) ReadFrame() (Frame, error) {
+	fh, err := readFrameHeader(fr.headerBuf[:], fr.r)
+	if err != nil {
+		return nil, err
+	}
+	// ...
+}
+
+--
+
+type Frame ???
+
+// struct or interface?
+
+--
+
+// A Frame is the base interface implemented by all frame types.
+// Callers will generally type-assert the specific frame type:
+// *HeadersFrame, *SettingsFrame, *WindowUpdateFrame, etc.
+//
+// Frames are only valid until the next call to Framer.ReadFrame.
+type Frame interface {
+	Header() FrameHeader
+
+	// invalidate is called by Framer.ReadFrame to make this
+	// frame's buffers as being invalid, since the subsequent
+	// frame will reuse them.
+	invalidate()
+}
+
+--
+
+// A FrameHeader is the 9 byte header of all HTTP/2 frames.
+//
+// See http://http2.github.io/http2-spec/#FrameHeader
+type FrameHeader struct {
+	valid bool // caller can access []byte fields in the Frame
+
+	// Type is the 1 byte frame type. There are ten standard frame
+	// types, but extension frame types may be written by WriteRawFrame
+	// and will be returned by ReadFrame (as UnknownFrame).
+	Type FrameType
+
+	...
+
+--
+
+func (h *FrameHeader) invalidate() { h.valid = false }
+
+func (h *FrameHeader) checkValid() {
+	if !h.valid {
+		panic("Frame accessor called on non-owned Frame")
+	}
+}
+
+--
+
+// A HeadersFrame is used to open a stream and additionally carries a
+// header block fragment.
+type HeadersFrame struct {
+	FrameHeader
+
+	// Priority is set if FlagHeadersPriority is set in the FrameHeader.
+	Priority PriorityParam
+
+	headerFragBuf []byte // not owned
+}
+
+func (f *HeadersFrame) HeaderBlockFragment() []byte {
+	f.checkValid()
+	return f.headerFragBuf
+}
+
+func (f *HeadersFrame) HeadersEnded() bool {
+	return f.Flags.Has(FlagHeadersEndHeaders)
+}
+
+--
+
+// A Framer reads and writes Frames.
+type Framer struct {
+	r         io.Reader
+	lastFrame Frame
+
+	maxReadSize uint32
+	headerBuf   [frameHeaderLen]byte
+
+	// TODO: let getReadBuf be configurable, and use a less memory-pinning
+	// allocator in server.go to minimize memory pinned for many idle conns.
+	// Will probably also need to make frame invalidation have a hook too.
+	getReadBuf func(size uint32) []byte
+	readBuf    []byte // cache for default getReadBuf
+
+--
+
+// a frameParser parses a frame given its FrameHeader and payload
+// bytes. The length of payload will always equal fh.Length (which
+// might be 0).
+type frameParser func(fh FrameHeader, payload []byte) (Frame, error)
+
+var frameParsers = map[FrameType]frameParser{
+	FrameData:         parseDataFrame,
+	FrameHeaders:      parseHeadersFrame,
+	FramePriority:     parsePriorityFrame,
+	FrameRSTStream:    parseRSTStreamFrame,
+	FrameSettings:     parseSettingsFrame,
+	FramePushPromise:  parsePushPromise,
+	FramePing:         parsePingFrame,
+	FrameGoAway:       parseGoAwayFrame,
+	FrameWindowUpdate: parseWindowUpdateFrame,
+	FrameContinuation: parseContinuationFrame,
+}
+
+func typeFrameParser(t FrameType) frameParser {
+	if f := frameParsers[t]; f != nil {
+		return f
+	}
+	return parseUnknownFrame
+}
+
+--
+
+// ReadFrame reads a single frame. The returned Frame is only valid ...
+// If the frame is larger than previously set with SetMaxReadFrameSize, ...
+func (fr *Framer) ReadFrame() (Frame, error) {
+	if fr.lastFrame != nil {
+		fr.lastFrame.invalidate()
+	}
+	fh, err := readFrameHeader(fr.headerBuf[:], fr.r)
+	if err != nil {
+		return nil, err
+	}
+	if fh.Length > fr.maxReadSize {
+		return nil, ErrFrameTooLarge
+	}
+	payload := fr.getReadBuf(fh.Length)
+	if _, err := io.ReadFull(fr.r, payload); err != nil {
+		return nil, err
+	}
+	f, err := typeFrameParser(fh.Type)(fh, payload)
+	if err != nil {
+		return nil, err
+	}
+	fr.lastFrame = f
+	return f, nil
+}
+
+--
+
+func parseDataFrame(fh FrameHeader, payload []byte) (Frame, error) {
+	if fh.StreamID == 0 {
+		// "DATA frames MUST be associated with a stream. If a
+		// DATA frame is received whose stream identifier
+		// field is 0x0, the recipient MUST ..." (slide trunc)
+		return nil, ConnectionError(ErrCodeProtocol)
+	}
+	f := &DataFrame{FrameHeader: fh}
+	var padSize byte
+	if fh.Flags.Has(FlagDataPadded) {
+		var err error
+		payload, padSize, err = readByte(payload)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if int(padSize) > len(payload) {
+		// "If the length of the padding ... (slide trunc)
+		return nil, ConnectionError(ErrCodeProtocol)
+	}
+	f.data = payload[:len(payload)-int(padSize)]
+	return f, nil
+}
+
+--
+
+// An ErrCode is an unsigned 32-bit error code as defined in the HTTP/2 spec.
+type ErrCode uint32
+
+const (
+	ErrCodeNo                 ErrCode = 0x0
+	ErrCodeProtocol           ErrCode = 0x1
+	ErrCodeInternal           ErrCode = 0x2
+...
+
+// ConnectionError is an error that results in the termination of the
+// entire connection.
+type ConnectionError ErrCode
+
+func (e ConnectionError) Error() string { return fmt.Sprintf("connection error: %s", ErrCode(e)) }
+
+// StreamError is an error that only affects one stream ...
+type StreamError struct {
+	StreamID uint32
+	Code     ErrCode
+...
+
+
+--
+
+func (f *Framer) WriteData(streamID uint32, endStream bool, data []byte) error {
+func (f *Framer) WriteSettings(settings ...Setting) error {
+func (f *Framer) WriteSettingsAck() error {
+func (f *Framer) WritePing(ack bool, data [8]byte) error {
+func (f *Framer) WriteGoAway(maxStreamID uint32, code ErrCode, debugData []byte) error {
+func (f *Framer) WriteWindowUpdate(streamID, incr uint32) error {
+func (f *Framer) WriteHeaders(p HeadersFrameParam) error {
+func (f *Framer) WritePriority(streamID uint32, p PriorityParam) error {
+func (f *Framer) WriteRSTStream(streamID uint32, code ErrCode) error {
+func (f *Framer) WriteContinuation(streamID uint32, endHeaders bool, headerBlockFragment []byte) error {
+func (f *Framer) WritePushPromise(p PushPromiseParam) error {
+func (f *Framer) WriteRawFrame(t FrameType, flags Flags, streamID uint32, payload []byte) error {
+
+--
+
+func (f *Framer) WriteSettings(settings ...Setting) error {
+        f.startWrite(FrameSettings, 0, 0)
+        for _, s := range settings {
+                f.writeUint16(uint16(s.ID))
+                f.writeUint32(s.Val)
+        }
+        return f.endWrite()
+}
+
+
+--
+
+func (f *Framer) WriteSettingsAck() error {
+	f.startWrite(FrameSettings, FlagSettingsAck, 0)
+	return f.endWrite()
+}
+
+--
+
+// A Framer reads and writes Frames.
+type Framer struct {
+....
+	w    io.Writer
+	wbuf []byte
+
+	// AllowIllegalWrites permits the Framer's Write methods to
+	// write frames that do not conform to the HTTP/2 spec.  This
+	// permits using the Framer to test other HTTP/2
+	// implementations' conformance to the spec.
+	// If false, the Write methods will prefer to return an error
+	// rather than comply.
+	AllowIllegalWrites bool
+}
+
+--
+
+func (f *Framer) startWrite(ftype FrameType, flags Flags, streamID uint32) {
+	// Write the FrameHeader.
+	f.wbuf = append(f.wbuf[:0],
+		0, // 3 bytes of length, filled in in endWrite
+		0,
+		0,
+		byte(ftype),
+		byte(flags),
+		byte(streamID>>24),
+		byte(streamID>>16),
+		byte(streamID>>8),
+		byte(streamID))
+}
+
+--
+
+func (f *Framer) endWrite() error {
+	// Now that we know the final size, fill in the FrameHeader in
+	// the space previously reserved for it. Abuse append.
+	length := len(f.wbuf) - frameHeaderLen
+	if length >= (1 << 24) {
+		return ErrFrameTooLarge
+	}
+	_ = append(f.wbuf[:0],
+		byte(length>>16),
+		byte(length>>8),
+		byte(length))
+	n, err := f.w.Write(f.wbuf)
+	if err == nil && n != len(f.wbuf) {
+		err = io.ErrShortWrite
+	}
+	return err
+}
+
+--
+
+func (f *Framer) writeByte(v byte)     { f.wbuf = append(f.wbuf, v) }
+func (f *Framer) writeBytes(v []byte)  { f.wbuf = append(f.wbuf, v...) }
+func (f *Framer) writeUint16(v uint16) { f.wbuf = append(f.wbuf, byte(v>>8), byte(v)) }
+func (f *Framer) writeUint32(v uint32) {
+	f.wbuf = append(f.wbuf, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+}
+
+--
+
+// WriteData writes a DATA frame.
+//
+// It will perform exactly one Write to the underlying Writer.
+// It is the caller's responsibility to not call other Write methods concurrently.
+func (f *Framer) WriteData(streamID uint32, endStream bool, data []byte) error {
+	// TODO: ignoring padding for now. will add when somebody cares.
+	if !validStreamID(streamID) && !f.AllowIllegalWrites {
+		return errStreamID
+	}
+	var flags Flags
+	if endStream {
+		flags |= FlagDataEndStream
+	}
+	f.startWrite(FrameData, flags, streamID)
+	f.wbuf = append(f.wbuf, data...)
+	return f.endWrite()
+}
